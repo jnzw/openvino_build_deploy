@@ -63,6 +63,56 @@ def preprocess_images(imgs, width, height):
         result.append(input_img)
     return np.array(result)
 
+def process_segmentation_results(frame, bg_image, results, in_width, in_height, thresh=0.5):
+    labels = results['labels']
+    boxes = results['boxes']
+    masks = results['masks']
+
+    h, w = frame.shape[:2]
+    scale_x, scale_y = w / in_width, h / in_height
+
+    valid_indices = np.where(
+        (labels == 0) & # Default person class label is 0
+        (boxes[:, 4] > thresh) # Confidence score above threshold
+    )[0]
+
+    foreground_mask = np.zeros((h, w), dtype=np.uint8)
+
+    for idx in valid_indices:
+        xmin, ymin, xmax, ymax, _ = boxes[idx]
+
+        # Scale coordinates
+        xmin = int(xmin * scale_x)
+        ymin = int(ymin * scale_y)
+        xmax = int(xmax * scale_x)
+        ymax = int(ymax * scale_y)
+        
+        # Clip coordinates
+        xmin, ymin = max(0, xmin), max(0, ymin)
+        xmax, ymax = min(w, xmax), min(h, ymax)
+        
+        if xmax <= xmin or ymax <= ymin:
+            continue
+
+        # Process foreground mask
+        mask = cv2.resize(masks[idx], (xmax - xmin, ymax - ymin))
+        mask_binary = ((mask > thresh) * 255).astype(np.uint8)
+        
+        foreground_mask[ymin:ymax, xmin:xmax] = cv2.bitwise_or(
+            foreground_mask[ymin:ymax, xmin:xmax],
+            mask_binary
+        )
+
+    # Background replacement
+    background_mask = cv2.bitwise_not(foreground_mask)
+    bg_resized = cv2.resize(bg_image, (w, h))
+    
+    # Blending
+    foreground = cv2.bitwise_and(frame, frame, mask=foreground_mask)
+    background = cv2.bitwise_and(bg_resized, bg_resized, mask=background_mask)
+    
+    return cv2.add(foreground, background)
+
 
 def process_detection_results(frame, results, in_width, in_height, thresh=0.5):
     # The size of the original frame.
@@ -186,12 +236,13 @@ def draw_christmas_masks(frame, detections):
     return frame
 
 
-def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_model, model_precision, device, flip):
+def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_model, segmentation_model, model_precision, device, flip):
     device_mapping = utils.available_devices()
 
     face_detection_model_path = download_model(face_detection_model, model_precision)
     face_landmarks_model_path = download_model(face_landmarks_model, model_precision)
     face_emotions_model_path = download_model(face_emotions_model, model_precision)
+    segmentation_model_path = download_model(segmentation_model, model_precision)
 
     # load face detection model
     fd_model, fd_input, fd_output = load_model(face_detection_model_path, device)
@@ -204,6 +255,15 @@ def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_m
     # load emotion classification model
     fe_model, fe_input, fe_output = load_model(face_emotions_model_path, device)
     fe_height, fe_width = list(fe_input.shape)[2:4]
+    
+    # load segmentation model
+    seg_model, seg_input, _ = load_model(segmentation_model_path, device)
+    seg_height, seg_width = list(seg_input.shape)[2:4]
+    
+    def replace_background(img, bg_image):
+        input_img = preprocess_images([img], seg_width, seg_height)[0]
+        results = seg_model([input_img])
+        return process_segmentation_results(img, bg_image, results, seg_width, seg_height, thresh=0.5)
 
     def detect_faces(img):
         input_img = preprocess_images([img], fd_width, fd_height)[0]
@@ -243,6 +303,8 @@ def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_m
         title = "Press ESC to Exit"
         cv2.namedWindow(title, cv2.WINDOW_GUI_NORMAL)
         cv2.setWindowProperty(title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        
+        bg_image = cv2.imread("assets/christmas_background.jpg")
 
         processing_times = collections.deque()
         while True:
@@ -255,6 +317,7 @@ def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_m
             # Measure processing time.
             start_time = time.time()
 
+            frame = replace_background(frame, bg_image)
             boxes = detect_faces(frame)
             landmarks = detect_landmarks(frame, boxes)
             emotions = recognize_emotions(frame, boxes)
@@ -315,8 +378,10 @@ if __name__ == '__main__':
     parser.add_argument("--detection_model_name", type=str, default="face-detection-0205", help="Face detection model to be used")
     parser.add_argument("--landmarks_model_name", type=str, default="facial-landmarks-35-adas-0002", help="Face landmarks regression model to be used")
     parser.add_argument("--emotions_model_name", type=str, default="emotions-recognition-retail-0003", help="Face emotions recognition model to be used")
+    parser.add_argument("--segmentation_model_name", type=str, default="instance-segmentation-security-1040", help="Instance segmentation model to be used")
     parser.add_argument("--model_precision", type=str, default="FP16-INT8", choices=["FP16-INT8", "FP16", "FP32"], help="All models precision")
     parser.add_argument("--flip", type=bool, default=True, help="Mirror input video")
 
     args = parser.parse_args()
-    run_demo(args.stream, args.detection_model_name, args.landmarks_model_name, args.emotions_model_name, args.model_precision, args.device, args.flip)
+    run_demo(args.stream, args.detection_model_name, args.landmarks_model_name, args.emotions_model_name, args.segmentation_model_name,
+             args.model_precision, args.device, args.flip)
