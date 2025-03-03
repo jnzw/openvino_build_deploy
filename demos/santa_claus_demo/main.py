@@ -305,6 +305,7 @@ def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_m
         cv2.setWindowProperty(title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         
         bg_image = cv2.imread("assets/christmas_background.jpg")
+        virtual_background = False
 
         processing_times = collections.deque()
         while True:
@@ -317,7 +318,9 @@ def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_m
             # Measure processing time.
             start_time = time.time()
 
-            frame = replace_background(frame, bg_image)
+            if virtual_background:
+                frame = replace_background(frame, bg_image)
+
             boxes = detect_faces(frame)
             landmarks = detect_landmarks(frame, boxes)
             emotions = recognize_emotions(frame, boxes)
@@ -349,6 +352,10 @@ def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_m
             # escape = 27 or 'q' to close the app
             if key == 27 or key == ord('q'):
                 break
+
+            # 'b' to switch background
+            if key == ord('b'):
+                virtual_background = not virtual_background
 
             for i, dev in enumerate(device_mapping.keys()):
                 if key == ord('1') + i:
