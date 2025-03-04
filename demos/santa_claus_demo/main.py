@@ -58,10 +58,10 @@ def preprocess_images(imgs, width, height, is_channel_first=True):
     result = []
     for img in imgs:
         # Resize the image and change dims to fit neural network input.
-        input_img = cv2.resize(src=img, dsize=(width, height), interpolation=cv2.INTER_AREA)
+        input_img = cv2.resize(src=img, dsize=(width, height), interpolation=cv2.INTER_NEAREST)
         if is_channel_first:
             input_img = input_img.transpose(2, 0, 1)
-        input_img = input_img[np.newaxis, ...]
+        input_img = np.expand_dims(input_img, 0)
         result.append(input_img)
     return np.array(result)
 
