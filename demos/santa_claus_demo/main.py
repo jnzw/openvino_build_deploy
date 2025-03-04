@@ -54,12 +54,14 @@ def load_model(model_path, device):
     return compiled_model, input_layer, output_layer
 
 
-def preprocess_images(imgs, width, height):
+def preprocess_images(imgs, width, height, is_channel_first=True):
     result = []
     for img in imgs:
         # Resize the image and change dims to fit neural network input.
         input_img = cv2.resize(src=img, dsize=(width, height), interpolation=cv2.INTER_AREA)
-        input_img = input_img.transpose(2, 0, 1)[np.newaxis, ...]
+        if is_channel_first:
+            input_img = input_img.transpose(2, 0, 1)
+        input_img = input_img[np.newaxis, ...]
         result.append(input_img)
     return np.array(result)
 
@@ -112,6 +114,14 @@ def process_segmentation_results(frame, bg_image, results, in_width, in_height, 
     background = cv2.bitwise_and(bg_resized, bg_resized, mask=background_mask)
     
     return cv2.add(foreground, background)
+
+
+def process_segmentation_results_selfie(results, orig_w, orig_h):
+    # background class label is 0
+    background_mask = np.argmax(results[0], -1)[0]
+    background_mask_resize = cv2.resize(background_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+    background_mask_resize = np.stack((background_mask_resize,) *3, axis=-1) > 0
+    return background_mask_resize
 
 
 def process_detection_results(frame, results, in_width, in_height, thresh=0.5):
@@ -258,12 +268,20 @@ def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_m
     
     # load segmentation model
     seg_model, seg_input, _ = load_model(segmentation_model_path, device)
-    seg_height, seg_width = list(seg_input.shape)[2:4]
+    # selfie_multiclass_256x256 model input's shape is 1*256*256*3 in N, H, W, C
+    seg_height, seg_width = list(seg_input.shape)[1:3]
     
     def replace_background(img, bg_image):
         input_img = preprocess_images([img], seg_width, seg_height)[0]
         results = seg_model([input_img])
         return process_segmentation_results(img, bg_image, results, seg_width, seg_height, thresh=0.5)
+
+    def detect_background(img):
+        input_img = preprocess_images([img], seg_width, seg_height, is_channel_first=False)[0]
+        input_img = input_img.astype(np.float32) / 255 # normalize
+        results = seg_model([input_img])
+        orig_h, orig_w = img.shape[:2]
+        return process_segmentation_results_selfie(results, orig_w, orig_h)
 
     def detect_faces(img):
         input_img = preprocess_images([img], fd_width, fd_height)[0]
@@ -318,15 +336,21 @@ def run_demo(source, face_detection_model, face_landmarks_model, face_emotions_m
             # Measure processing time.
             start_time = time.time()
 
-            if virtual_background:
-                frame = replace_background(frame, bg_image)
-
             boxes = detect_faces(frame)
             landmarks = detect_landmarks(frame, boxes)
             emotions = recognize_emotions(frame, boxes)
             detections = zip(boxes, landmarks, emotions)
-
+            
+            if virtual_background:
+                background_mask = detect_background(frame)
+                if bg_image.shape != frame.shape:
+                    bg_image = cv2.resize(bg_image, frame.shape[:2][::-1], interpolation=cv2.INTER_AREA)
+                    
             stop_time = time.time()
+            
+            if virtual_background:
+                # replace background on original image
+                frame = np.where(background_mask, frame, bg_image)
 
             # Draw watermark
             utils.draw_ov_watermark(frame)
